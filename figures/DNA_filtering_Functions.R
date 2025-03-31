@@ -213,45 +213,61 @@ library(dendsort)
 sort_hclust <- function(...) as.hclust(dendsort(as.dendrogram(...)))
 
 ## Function for calling genotypes. Input aligned and trimmed allele table. 
-Genotyping_Cells <- function(x) { 
-    matrix <- x
+Genotyping_Cells <- function(alleles, cell_col) { 
+    matrix <- alleles
     Genotypes <- matrix$Aligned_Sequence %>% unique
     
     #Collapse the values of all alleles detected into one string.
-    matrix_genotypes <- matrix %>% group_by(plate_well) %>% arrange(Aligned_Sequence) %>% summarize(genotype = str_c(Aligned_Sequence, collapse ="_"))
+    matrix_genotypes <- matrix %>% group_by(!!sym(cell_col)) %>% arrange(Aligned_Sequence) %>% 
+            summarize(genotype = str_c(Aligned_Sequence, collapse ="_"))
     #Add empty allelic genotype column
     matrix_genotypes<- mutate(matrix_genotypes, AllelicGenotype = "")
     
     #Add genotype ID for later deconvolution
     for (i in 1:length(Genotypes)){      
-       matrix_genotypes <- 
+        matrix_genotypes <- 
             mutate(matrix_genotypes, 
             AllelicGenotype = str_c(AllelicGenotype, ifelse(grepl(genotype, pattern = fixed(Genotypes[i])), LETTERS[i],"")))}
     return(matrix_genotypes)
 }
 
 ## Function for plotting Alleles
-Plotting_Alleles <- function(Filter_Allele_Tibble) { 
-    
-#Identify unique alleles
-UniqueAlleles <- select(Filter_Allele_Tibble, Aligned_Sequence, Reference) %>% unique() %>% as_tibble()
+Plotting_Alleles <- function(Filter_Allele_Tibble, ref = NULL) { 
+    if(!missing(ref)) {
+        Filter_Allele_Tibble[['Reference']] = ref
+    }
 
-#Separate bases across the amplicon
+    #Identify unique alleles
+    if ('Reference' %in% colnames(Filter_Allele_Tibble)){
+        UniqueAlleles <- select(Filter_Allele_Tibble, Aligned_Sequence, Reference) %>% unique() %>% as_tibble()
+
+    } else{
+        UniqueAlleles <- select(Filter_Allele_Tibble, Aligned_Sequence) %>% unique() %>% as_tibble()
+    }
+
+    #Separate bases across the amplicon
     ALLELES <- apply(matrix(UniqueAlleles$Aligned_Sequence), 1, 
         function(x) {
             gsub("(.{1})", "\\1 ", x)
         }) %>% str_split_fixed(pattern = " ", n = str_length(UniqueAlleles$Aligned_Sequence[1]))
-    REF <- apply(matrix(UniqueAlleles$Reference), 1, 
+
+        if ('Reference' %in% colnames(Filter_Allele_Tibble)){
+
+        REF <- apply(matrix(UniqueAlleles$Reference), 1, 
         function(x) {
             gsub("(.{1})", "\\1 ", x)
         }) %>% str_split_fixed(pattern = " ", n = str_length(UniqueAlleles$Reference[1]))
 
+    }
+
     x <- copy(ALLELES)
-    
+
     #Identify reference nucleotides
-    x[ALLELES == REF] <- "R"
+    if ('Reference' %in% colnames(Filter_Allele_Tibble)){
+        x[ALLELES == REF] <- "R"
+        }
     y <- copy(ALLELES)
-    
+
     #Collapse into a dataframe. 
     x <- x %>% unique %>% as.data.frame(stringsAsFactors = FALSE) %>% 
         tidyr::gather(position, value) %>% dplyr::mutate(position = gsub("V", 
@@ -265,61 +281,60 @@ UniqueAlleles <- select(Filter_Allele_Tibble, Aligned_Sequence, Reference) %>% u
     x <- x %>% cbind(y$label)
     x <- mutate(x, genotypes = LETTERS[as.numeric(genotypes)])
 
-#Plotting the data
-fig.size(10,10)
-   g<- x %>% #the number is the filter on genotype 
-ggplot(aes(x = reorder(position, as.integer(position)), 
-           y = 1, fill = `value`)) + 
-    geom_tile(aes(color = value), width=1, height=1) +
-        geom_text(data = dplyr::filter(x),
-                  aes(label = `y$label`), angle = 0, size = (4)) + 
-        geom_text(data = dplyr::filter(x, value != "R"),
-                  aes(label = `y$label`), angle = 0, size = (4))+
-        scale_fill_manual(values = 
-                    c(R = 'white',
-                      C = "#5194ed", 
-                      T = "#fdb462", 
-                      G = "#7fc97f", 
-                      A = "#ef3b2c",
-                     `-` ="grey80"))+ 
-        scale_color_manual(values = 
-                   c(R = 'grey'))+
- 
-        ggtitle("") + 
-        theme_gy()+
-        xlab("")+
-        theme(aspect.ratio = 0.1)+ 
-        ylab("") +
-        theme(axis.text.y = element_text(size = 0, angle = 0, hjust = .5, vjust = .5),
-          axis.text.x = element_text(size = 0),
-        axis.title.x = element_text(size = 20, angle = 0, hjust = .5, vjust = .5),
-        axis.title.y = element_text(size = 20, angle = 90, hjust = .5, vjust = .5),
-          axis.ticks.y = element_blank(),
-         legend.position = "none") + 
-    scale_x_discrete(breaks=NULL) + 
-    facet_grid(factor((genotypes),)~.)+ 
-theme(
-  strip.background = element_blank(),
-  strip.text.x = element_blank(), 
-    panel.border=element_blank()
+    #Plotting the data
+    fig.size(10,10)
+       g<- x %>% #the number is the filter on genotype 
+    ggplot(aes(x = reorder(position, as.integer(position)), 
+               y = 1, fill = `value`)) + 
+        geom_tile(aes(color = value), width=1, height=1) +
+            geom_text(data = dplyr::filter(x),
+                      aes(label = `y$label`), angle = 0, size = (4)) + 
+            geom_text(data = dplyr::filter(x, value != "R"),
+                      aes(label = `y$label`), angle = 0, size = (4))+
+            scale_fill_manual(values = 
+                        c(R = 'white',
+                          C = "#5194ed", 
+                          T = "#fdb462", 
+                          G = "#7fc97f", 
+                          A = "#ef3b2c",
+                         `-` ="grey80"))+ 
+            scale_color_manual(values = 
+                       c(R = 'grey'))+
 
-) + 
-    annotate(geom = 'segment', y = Inf, yend = Inf, color = 'black', x = -Inf, xend = Inf, size = 1) + 
+            ggtitle("") + 
+            theme_gy()+
+            xlab("")+
+            theme(aspect.ratio = 0.1)+ 
+            ylab("") +
+            theme(axis.text.y = element_text(size = 0, angle = 0, hjust = .5, vjust = .5),
+              axis.text.x = element_text(size = 0),
+            axis.title.x = element_text(size = 20, angle = 0, hjust = .5, vjust = .5),
+            axis.title.y = element_text(size = 20, angle = 90, hjust = .5, vjust = .5),
+              axis.ticks.y = element_blank(),
+             legend.position = "none") + 
+        scale_x_discrete(breaks=NULL) + 
+        facet_grid(factor((genotypes),)~.)+ 
+    theme(
+      strip.background = element_blank(),
+      strip.text.x = element_blank(), 
+        panel.border=element_blank()
 
-    annotate(geom = 'segment', y = -Inf, yend = -Inf, color = 'black', x = -Inf, xend = Inf, size = 1)
+    ) + 
+        annotate(geom = 'segment', y = Inf, yend = Inf, color = 'black', x = -Inf, xend = Inf, size = 1) + 
+        annotate(geom = 'segment', y = -Inf, yend = -Inf, color = 'black', x = -Inf, xend = Inf, size = 1)
 
-return(g)
-
+    return(g)
 
 }
 
-Filtering_Cells_Read <- function(x) { 
-    mat <- mutate(x, plate_well = paste0(Barcode_DNA, Well_ID))
-    mat <- mutate(mat, TotalReads = `#Reads`/(`%Reads`/100))
-    Plates <- unique(mat$Barcode_DNA)
-    ReadFilters <- lapply(Plates, function(Plates) {
-        data <- mat %>% dplyr::filter(Barcode_DNA == Plates) %>% group_by(plate_well) %>% 
-            top_n(1, wt = `#Reads`) %>% select(TotalReads, plate_well) %>% 
+
+Filtering_Cells_Read <- function(alleles, plate_col, cell_col) { 
+    mat <- alleles %>% mutate(TotalReads = `#Reads`/(`%Reads`/100))
+    Plates <- unique(mat[[plate_col]])
+    
+    ReadFilters <- lapply(Plates, function(Plate) {
+        data <- (mat[mat[[plate_col]]==Plate,] %>% group_by(!!sym(cell_col)) %>% 
+            top_n(1, wt = `#Reads`))[c('TotalReads', cell_col)] %>% 
             unique
         totals <- data$TotalReads
         o <- order(totals, decreasing = T)
@@ -337,35 +352,39 @@ Filtering_Cells_Read <- function(x) {
         plot1 <- ggplot(data = tibble(x = 1:length(curvature), 
             y = curvature), aes(x, y)) + geom_point() + xlab("Rank") + 
             ylab("Calculated Curvature") + theme_gy() + theme(axis.text.x = element_text(hjust = 0.75)) + 
-            ggtitle(Plates) + geom_vline(xintercept = which.min(curvature), 
+            ggtitle(Plate) + geom_vline(xintercept = which.min(curvature), 
             linetype = "dashed", color = "red", size = 1)
        
         plot2 <- ggplot(data = tibble(x, y), aes(x, y)) + geom_point() + 
             xlab("Rank") + ylab("log10(Reads) \n per cell") + 
             theme_gy() + theme(axis.text.x = element_text(hjust = 0.75)) + 
-            ggtitle(Plates) + geom_hline(yintercept = y[which.min(curvature)], 
+            ggtitle(Plate) + geom_hline(yintercept = y[which.min(curvature)], 
             linetype = "dashed", color = "red", size = 1)
-     print(plot1) | print(plot2)
+        
+        p = plot1 + plot2 + plot_layout(nrow = 1)
+        print(p)
+     # print(plot1) | print(plot2)
         return(cutoff = 10^y[which.min(curvature)])
     })
     names(ReadFilters) <- Plates
+    
     return(bind_rows(lapply(Plates, function(x) {
-        dplyr::filter(mat, Barcode_DNA == x & TotalReads >= ReadFilters[x])
+        mat[(mat[[plate_col]]==x) & mat[['TotalReads']] >= ReadFilters[x],]
     })))
     }
 
 # A function for filtering alleles per cell. Inspired by EmptryDroplets from Lun et al. Genome Bio 2019
-Filtering_Alleles <- function (x, cutoff = 10) 
+Filtering_Alleles <- function (alleles, plate_col, cell_col, cutoff = 10) 
 {
-    matrix <- x # Define input matrix
-    matrix <- mutate(matrix, plate_well = paste0(Barcode_DNA, 
-        Well_ID)) # create a plate_well identifier. 
-    cells <- unique(matrix$plate_well) # pull out unique cells
-    Plates <- unique(matrix$Barcode_DNA) # Pull out unique plates
+    matrix = alleles
+    # matrix <- alleles %>%  mutate(plate_well = paste0(Barcode_DNA, 
+    #     Well_ID)) # create a plate_well identifier. 
+    cells <- unique(matrix[[plate_col]]) # pull out unique cells
+    Plates <- unique(matrix[[plate_col]]) # Pull out unique plates
     
     #Define allele threshold cutoff. Ie number of alleles to keep per cell. 
     Allele_Threshold <- lapply(cells, function(x) {
-        data <- matrix %>% filter(plate_well == x) %>% 
+        data <- matrix[matrix[[plate_col]]==x, ] %>% 
             dplyr::select(`%Reads`) # filter on cell
         totals <- data$`%Reads` # pull out reads
         o <- order(totals, decreasing = T) # order 
@@ -384,10 +403,10 @@ Filtering_Alleles <- function (x, cutoff = 10)
     Filter_matrix <- bind_rows(
         lapply(cells, function(x) {
         if ((Allele_Threshold[x] > 0) == T) {     # Account for only 1 allele recovered.
-        dplyr::filter(matrix, plate_well == x) %>% top_n(n = Allele_Threshold[x], 
+        matrix[matrix[[plate_col]]==x, ] %>% top_n(n = Allele_Threshold[x], 
             wt = `%Reads`)}
             else{
-                dplyr::filter(matrix, plate_well == x) %>% top_n(n = 1, 
+                matrix[matrix[[plate_col]]==x, ] %>% top_n(n = 1, 
             wt = `%Reads`)}
     }))
 

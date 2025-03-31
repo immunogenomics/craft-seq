@@ -708,23 +708,30 @@ normalize_rna = function(exprs, meta, fields, filters, scale = FALSE){
     return(scale_exprs)
 }
 
-#Full function going to Allele Feq Table to Matrix for Analysis. 
-AllelesFunction <- function(filepath){ 
-
-    files <- list.files(path = filepath, 
-                         pattern = ".txt$", 
-                         full.names = T, 
-                         recursive = T)
+#Alleles Function for Import - Updated- Fixed Naming to Automate and Changed to Capture the top 10 alleles per cell. 
+AllelesFunction <- 
+function (filepath, number_of_alleles = 10) #Filepath is the folder with all the allele tables. 
+{
+    filepath <- sub("/$", "", filepath)
+    files <- list.files(path = filepath, pattern = "Alleles_frequency_table.txt$", full.names = T, 
+        recursive = T) 
+        
+    matrix <- rbindlist(lapply(files, function(f) {
+    # Extract Plate_Well ID from the file path
+    plate_id <- str_extract(f, "[^/]+(?=/CRISPRessoBatch_on_batch/CRISPResso_on_[^/]+)") %>%
+                paste0("_", str_extract(f, "(?<=CRISPResso_on_)[^/]+"))
     
-    matrix <- suppressMessages({suppressWarnings({lapply(files, read_tsv, n_max=2, col_select = c(1,5,6,7,8,9))
-        })})
+        # Read file and add Plate_Well column
+        mat_file <- fread(f, nrows = number_of_alleles, select = c(1, 5, 6, 7, 8, 9))
+        mat_file[, Plate_Well := plate_id]  # Assign the extracted Plate_Well ID
 
-    names(matrix) <- paste0(str_split(files,pattern = "on_|/", simplify = T)[,c(12)], "_",str_split(files,pattern = "on_|/", simplify = T)[,c(16)])
-    
-    matrix <- bind_rows(matrix, .id = 'Plate_Well')
+        return(mat_file)  # Return the modified table
+    }), use.names = TRUE, fill = TRUE)  # Bind all tables together
+
+    matrix = cbind(matrix[, (ncol(matrix)):(ncol(matrix))], matrix[, 1:(ncol(matrix)-1)])
     
     return(matrix)
-    }
+}
 
 ##Filtering Function and spreading out the two alleles. 
 FilterAlleles <- function (matrix, n=10, p=40) 

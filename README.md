@@ -1,9 +1,9 @@
 # craft-seq
 This repo provides code for the analysis of CRAFT-seq data corresponding to [Baglaenko, et al, biorxiv, 2024](https://www.biorxiv.org/content/10.1101/2024.03.28.587175v1).
 
-Contact: Yuriy Baglaenko yuriy.baglaenko@cchmc.org, Michelle Curtis curtism@broadinstitute.org
+Contact: Yuriy Baglaenko yuriy.baglaenko@cchmc.org, Phoenix Mu zemu@bwh.harvard.edu
 
-Contained in this repo are figures/analysis notebooks or scripts for each of the following experiments.
+Contained in this repo are notebooks or scripts for the analyses and figures included in the manuscript. We have also provided a [tutorial](./example/Example_CraftSeq.ipynb) notebook for the entire pipeline of analyzing data produced by CRAFT-Seq. This notebook utilizes data produced from the PTPRC experiment.
 
 | Experiment  |  Figure # | Notebooks/Scripts | Notes |
 |--------|----------|----------|----------|
@@ -17,6 +17,6 @@ Contained in this repo are figures/analysis notebooks or scripts for each of the
 | Misc |  | [Mixscape_Comparison_Latest.ipynb](./figures/Misc/Mixscape_Comparison_Latest.ipynb) <br> [TotalAlignmentStats_Latest.ipynb](./figures/Misc/TotalAlignmentStats_Latest.ipynb) <br> [Example Flow Cytometry Analysis.ipynb](./figures/Misc/PTEN_FBXO11_DQB1_Flow_Github.ipynb) | Extras |
 | Supplemental Note | |[Supplemental Note and Genotype Calling.ipynb](./figures/SupplementaryNote/SupplementaryNote_Github.ipynb) | Fully replicatable genotyping analysis. Key files deposited in folder | 
 
-Sample data for the PTEN, FBXO11, and DQB1 experiments is located on [Zenodo](https://zenodo.org/records/10932681). GEO records are being generated to deposit count matrices with trimmed meta data. 
-
 File: [DNA Filtering Functions](./figures/DNA_filtering_Functions.R) has updated function on allele calling and genotyping of single cell along with extra utility functions.
+
+Sample data for the PTEN, FBXO11, and DQB1 experiments is located on [Zenodo](https://zenodo.org/records/10932681). GEO records are being generated to deposit count matrices with trimmed meta data, and dbGAP records will be made available for raw sequencing data. QCed data from the PTPRC experiment is also available on [Zenodo](https://zenodo.org/records/15114923) and utilized in our [tutorial](./example/Example_CraftSeq.ipynb) notebook.
