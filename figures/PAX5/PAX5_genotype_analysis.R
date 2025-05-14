@@ -1,297 +1,355 @@
 ####################################################################################################
-## Script purpose: Process PAX5 amplicon data with allele tables
+## Script purpose: Genotyping pipeline from Yuriy's Jupyter notebook
 ## Author: Zepeng Mu
-## Date: Thu Jan 16 13:24:23 2025
+## Date: Tue Apr  1 10:16:05 2025
 ####################################################################################################
+library(matrixStats)
 library(data.table)
-library(tidyverse)
-library(pbmcapply)
-library(cowplot)
-library(ggridges)
-library(PrettyCols)
+library(viridis)
 library(RColorBrewer)
-library(Phoenix)
-library(ComplexHeatmap)
+library(pheatmap)
+library(Matrix)
+library(tidyverse)
+library(Biostrings)
+library(ggpubr)
+library(ggrepel)
 "%&%" <- function(a, b) paste0(a, b)
 
-# Define functions ====
-calcDeriv <- function(x) {
-  len <- length(x)
-  
-  if (len == 1) return(0)
-  
-  x <- sort(x, decreasing = T)
-  outX <- rep(0, len)
-  outX[1:(len - 1)] <- x[2:len] - x[1:(len - 1)]
-  return(outX)
-}
+source("../DNA_filtering_Functions.R")
 
-idxSort <- fread("../idxSort.txt")
+# Region A ----
+AllelesPAX5_A <- fread("../data/allCells_allele_A.txt.gz")
 
-# Region A ====
-allCellsA <- fread("../allCells_allele_A.txt")
+#Fix naming of columns
+AllelesPAX5_A <- AllelesPAX5_A %>% rename(bc = "DNA_cell") %>% separate(smp, into = c("Plate", "sample"))
+AllelesPAX5_A <- dplyr::inner_join(fread("../data/DNABarcodes.csv", header = T, col.names = c("Well", "DNA_cell")),
+                                   AllelesPAX5_A, by = "DNA_cell") # Merge with DNA barcodes
 
-targetA <- "GGACATGGAGGAGTGAATCAGCTTGGGGGGGTTTTTGTGAATG"
+#Create a plate_well ID for easy cell identification by combining the barcode DNA with the well_ID
+AllelesPAX5_A <- AllelesPAX5_A %>% mutate(plate_well = paste0(sample, DNA_cell))
+#Group by this ID to create a grouped table. 
+AllelesPAX5_A <- AllelesPAX5_A %>% dplyr::group_by(plate_well)
 
-allCellsASumm <- allCellsA %>% 
-  mutate(Target_Sequence = str_extract(Aligned_Sequence, str_replace_all(targetA, fixed("T"), "[TC]")),
-         Reference_Sequence = str_extract(Reference_Sequence, targetA)) %>% 
-  filter(!is.na(Target_Sequence) & !is.na(Reference_Sequence)) %>% 
-  dplyr::group_by(smp, Target_Sequence) %>% 
-  summarise(`#Reads` = sum(`#Reads`), `%Reads` = sum(`%Reads`), Reference_Sequence = unique(Reference_Sequence)) %>% 
-  arrange(desc(`#Reads`)) %>% 
-  mutate(rowNumber = row_number()) %>% 
-  ungroup()
+#Add the total # of reads per cell in a a new columbn for filtering. Future iterations of this analysis will simply multiply % of total * the number. 
+AllelesPAX5_A <- AllelesPAX5_A %>% summarize("TotalReads" = sum(`#Reads`)) %>% dplyr::inner_join(AllelesPAX5_A)
 
-ggplot(allCellsASumm, aes(rowNumber, `#Reads`)) +
-  theme_zm() +
-  geom_point() +
-  facet_wrap(~smp, scales = "free")
+#Fix name
+AllelesPAX5_A <- dplyr::rename(AllelesPAX5_A, Barcode_DNA = sample, Well_ID = Well)
+#Take top 10 alleles for visualiztion
+AllelesPAX5_A <- AllelesPAX5_A %>% dplyr::group_by(plate_well) %>% dplyr::slice_head(n = 10)
 
-allCellsAFlt <- allCellsA %>% 
-  mutate(
-    Target_Sequence = str_extract(Aligned_Sequence, str_replace_all(targetA, fixed("T"), "[TC]")),
-    Reference_Sequence = str_extract(Reference_Sequence, targetA)
-  ) %>% 
-  filter(!is.na(Target_Sequence) & !is.na(Reference_Sequence)) %>% 
-  dplyr::group_by(smp, bc, Target_Sequence) %>% 
-  summarise(`#Reads` = sum(`#Reads`), Reference_Sequence = unique(Reference_Sequence)) %>% 
-  mutate(A.T_84 = str_sub(Target_Sequence, 14, 14),
-         A.T_105 = str_sub(Target_Sequence, 35, 35),
-         A.T_106 = str_sub(Target_Sequence, 36, 36),
-         A.T_108 = str_sub(Target_Sequence, 38, 38),
-         haplotype = str_glue("{A.T_84}{A.T_105}{A.T_106}{A.T_108}")) %>% 
-  ungroup()
+Filter_Alleles_PAX5A <- Filtering_Cells_Read(AllelesPAX5_A)
+Filter_Alleles_PAX5A  %>% ggplot(aes(`%Reads`)) + 
+  geom_histogram(aes(y = ..density..),bins = 100) + theme_gy() + geom_vline(xintercept = 25, color = "red") + 
+  facet_grid(~Barcode_DNA)
 
-allCellsAFltHaplo %>% 
-  left_join(idxSort, by = c("smp", "bc")) %>% 
-  filter(cellType == "NTC") %>% 
-  dplyr::group_by(smp, haplotype) %>% 
-  tally() %>% 
-  ggplot(aes(x = haplotype, y = n, fill = smp)) +
-  theme_zm() +
-  geom_col(position = position_dodge())
+Filter_Alleles_PAX5A <- Filtering_Alleles(ungroup(Filter_Alleles_PAX5A), 25)
 
-allCellsAFltGeno <- allCellsAFltHaplo %>% 
-  dplyr::group_by(smp, bc) %>% 
-  slice_max(nReads, n = 2) %>% 
-  mutate(hapName = "hap"%&%row_number()) %>% 
-  pivot_wider(id_cols = c(smp, bc, totalReads), names_from = hapName, values_from = haplotype) %>% 
-  mutate(hap2 = case_when(is.na(hap2) ~ hap1, T ~ hap2),
-         A.T_84 = (str_sub(hap1, 1, 1) == "C") + (str_sub(hap2, 1, 1) == "C"),
-         A.T_105 = (str_sub(hap1, 2, 2) == "C") + (str_sub(hap2, 2, 2) == "C"),
-         A.T_106 = (str_sub(hap1, 3, 3) == "C") + (str_sub(hap2, 3, 3) == "C"),
-         A.T_108 = (str_sub(hap1, 4, 4) == "C") + (str_sub(hap2, 4, 4) == "C"))
+Filter_Alleles_PAX5A <- mutate(Filter_Alleles_PAX5A, Reference = "CAGCGGTGCTTCTCCTATGTGACTGGTTCTAACTACCCTTTCCCTTTCCTTTTGTTTCTGATCTGTTTCAGGACATGGAGGAGTGAATCAGCTTGGGGGGGTTTTTGTGAATGGACGGCCACTCCCGGATGTAGTCCGCCAGAGGATA")
 
-fwrite(allCellsAFltGeno, col.names = T, row.names = F, sep = "\t", quote = F,
-       file = "../allCells_haplo_geno_A.txt.gz")
+#Trim length for visualization and plotting
+Filter_Alleles_PAX5A <- 
+  mutate(Filter_Alleles_PAX5A, 
+         "Aligned_Sequence" = str_trunc(Aligned_Sequence, 75, "left", ellipsis = "")) %>% 
+  mutate("Reference"= str_trunc(Reference, 75, "left", ellipsis = ""))%>% 
+  mutate("Aligned_Sequence" = str_trunc(Aligned_Sequence, 40, "right", ellipsis = "")) %>% 
+  mutate("Reference"= str_trunc(Reference, 40, "right", ellipsis = ""))
 
-allCellsABMGeno <- fread("../allCells_summ_genoNew.txt.gz")
+Filter_Alleles_PAX5A <- Filter_Alleles_PAX5A %>% 
+  add_count(Aligned_Sequence) %>% 
+  filter(n >= 10)
 
-allCellsAFltGeno <- allCellsAFltGeno %>% 
-  left_join(allCellsABMGeno %>% dplyr::select(smp, bc, A.T_84.geno:A.T_108.geno), by = c("smp", "bc"))
+Filter_Alleles_PAX5A %>% Plotting_Alleles
 
-allCellsAFltGeno %>% 
-  filter(totalReads >= 100) %>% 
-  dplyr::group_by(smp, A.T_84, A.T_84.geno) %>% 
-  tally() %>% 
-  ggplot(aes(factor(A.T_84), factor(A.T_84.geno), size = n)) +
-  theme_zm() +
-  geom_point() +
-  scale_size_continuous(range = c(2, 12)) +
-  facet_wrap(~ smp) +
-  theme(aspect.ratio = 1)
+Filter_Alleles_PAX5A_gen <- Filter_Alleles_PAX5A %>% 
+  Genotyping_Cells() %>% 
+  add_count(AllelicGenotype) %>% 
+  filter(!str_detect(AllelicGenotype, fixed("L")))
 
-allCellsAFltHaplo1 <- allCellsAFlt %>% 
-  dplyr::select(-Target_Sequence, -Reference_Sequence, -(A.T_84:A.T_108)) %>% 
-  dplyr::group_by(smp, bc, haplotype) %>% 
-  summarise(nReads = sum(`#Reads`)) %>% 
-  dplyr::group_by(smp, bc) %>% 
-  mutate(totalReads = sum(nReads), propReads = nReads / totalReads) %>% 
-  dplyr::arrange(desc(propReads), .by_group = T) %>% 
-  mutate(cumPropReads = cumsum(propReads),
-         cumCut = cumsum(cumPropReads >= 0.9)) %>% 
-  filter(cumCut <= 1)
+Filter_Alleles_PAX5A_gen %>% 
+  dplyr::inner_join(Filter_Alleles_PAX5A, by = "plate_well") %>% 
+  dplyr::select(AllelicGenotype, Barcode_DNA) %>% 
+  table()
 
-allCellsAFltHaplo1 %>% 
-  left_join(idxSort, by = c("smp", "bc")) %>% 
-  dplyr::group_by(smp, bc, cellType) %>% 
-  tally() %>% 
-  ggplot(aes(x = factor(n), fill = smp)) +
-  theme_zm() +
-  geom_bar(position = position_dodge()) +
-  facet_wrap(~ cellType, scales = "free")
+summReadsA <- Filter_Alleles_PAX5A %>% 
+  dplyr::group_by(plate_well) %>% 
+  summarise(A.totalReads = sum(`#Reads`)) %>% 
+  filter(A.totalReads >= 20)
 
-allCellsAFltHaplo1 %>% 
-  left_join(idxSort, by = c("smp", "bc")) %>% 
-  filter(cellType == "NTC") %>% 
-  dplyr::group_by(smp, haplotype) %>% 
-  tally() %>% 
-  ggplot(aes(x = smp, y = n, fill = haplotype)) +
-  theme_zm() +
-  geom_col() +
-  scale_y_continuous(expand = c(0, 0))
+allCellsAFltSumm <- Filter_Alleles_PAX5A_gen %>% 
+  filter(plate_well %in% summReadsA$plate_well) %>% 
+  separate(genotype, c("geno1", "geno2"), sep = "_", remove = F, fill = "right") %>% 
+  mutate(geno2 = case_when(is.na(geno2) ~ geno1, T ~ geno2)) %>% 
+  rowwise() %>% 
+  mutate(A.hap1 = str_flatten(str_sub(geno1, c(11, 32, 33, 35), c(11, 32, 33, 35))),
+         A.hap2 = str_flatten(str_sub(geno2, c(11, 32, 33, 35), c(11, 32, 33, 35))))
 
-allCellsAFltHaploNTCAUC <- lapply(seq(0.05, 1, 0.02), function(s) {
-  tmp <- allCellsAFlt %>% 
-    dplyr::select(-Target_Sequence, -Reference_Sequence, -(A.T_84:A.T_108)) %>% 
-    dplyr::group_by(smp, bc, haplotype) %>% 
-    dplyr::summarise(nReads = sum(`#Reads`), .groups = "keep") %>% 
-    dplyr::group_by(smp, bc) %>% 
-    mutate(totalReads = sum(nReads), propReads = nReads / totalReads) %>% 
-    dplyr::arrange(desc(propReads), .by_group = T) %>% 
-    mutate(cumPropReads = cumsum(propReads),
-           cumCut = cumsum(cumPropReads >= s)) %>% 
-    filter(cumCut <= 1) %>% 
-    left_join(idxSort, by = c("smp", "bc")) %>% 
-    filter(totalReads >= 100) %>% 
-    mutate(callNTC = length(unique(haplotype)) == 1 & unique(haplotype) == "TTTT") %>% 
-    distinct(smp, bc, callNTC, cellType)
-  
-  tp <- sum(tmp$cellType == "NTC" & tmp$callNTC)
-  tn <- sum(tmp$cellType != "NTC" & !tmp$callNTC)
-  fp <- sum(tmp$cellType != "NTC" & tmp$callNTC)
-  fn <- sum(tmp$cellType == "NTC" & !tmp$callNTC)
-  
-  recall <- tp / (tp + fn)
-  precision <- tp / (tp + fp)
-  
-  return(data.frame(s, precision, recall, fp, tp))
-}) %>% base::Reduce(rbind, .)
+sum(table(c(allCellsAFltSumm$A.hap1, allCellsAFltSumm$A.hap2)))
+sort(table(c(allCellsAFltSumm$A.hap1, allCellsAFltSumm$A.hap2)))
 
-ggplot(allCellsAFltHaploNTCAUC, aes(precision, recall)) +
-  geom_point() +
-  geom_line()
+commonHap <- table(c(allCellsAFltSumm$A.hap1, allCellsAFltSumm$A.hap2))
 
-ggplot(allCellsAFltHaploNTCAUC, aes(fp, tp)) +
-  geom_point() +
-  geom_line()
+allCellsAFlt <- Filter_Alleles_PAX5A_gen %>% 
+  filter(plate_well %in% summReadsA$plate_well) %>% 
+  separate(genotype, c("geno1", "geno2"), sep = "_", remove = F, fill = "right") %>% 
+  mutate(geno2 = case_when(is.na(geno2) ~ geno1, T ~ geno2),
+         smp = str_extract(plate_well, "^[ABM][1234]"),
+         well = str_sub(plate_well, start = 3, end = nchar(plate_well))) %>% 
+  rowwise() %>% 
+  mutate(A.hap1 = str_flatten(str_sub(geno1, c(11, 32, 33, 35), c(11, 32, 33, 35))),
+         A.hap2 = str_flatten(str_sub(geno2, c(11, 32, 33, 35), c(11, 32, 33, 35))),
+         A.T_84 = (str_sub(A.hap1, 1, 1) == "C") + (str_sub(A.hap2, 1, 1) == "C"),
+         A.T_105 = (str_sub(A.hap1, 2, 2) == "C") + (str_sub(A.hap2, 2, 2) == "C"),
+         A.T_106 = (str_sub(A.hap1, 3, 3) == "C") + (str_sub(A.hap2, 3, 3) == "C"),
+         A.T_108 = (str_sub(A.hap1, 4, 4) == "C") + (str_sub(A.hap2, 4, 4) == "C")) %>% 
+  filter(A.hap1 %in% names(commonHap) & A.hap2 %in% names(commonHap))
 
-targetB <- "ATGACACCGTGCCTAGCGTCAGTTCCATCAACA"
+fwrite(allCellsAFlt, col.names = T, row.names = F, sep = "\t", quote = F,
+       file = "../data/allCells_haplo_geno_A_12plates.txt.gz")
 
-# Region B ====
-allCellsB <- fread("../allCells_allele_B.txt")
+# Region B ----
+AllelesPAX5_B <- fread("../data/allCells_allele.txt.gz")
 
-allCellsBFlt <- allCellsB %>% 
-  mutate(
-    Target_Sequence = str_extract(Aligned_Sequence, str_replace_all(targetB, fixed("T"), "[TC]")),
-    Reference_Sequence = str_extract(Reference_Sequence, targetB)
-  ) %>% 
-  filter(!is.na(Target_Sequence) & !is.na(Reference_Sequence)) %>% 
-  dplyr::group_by(smp, bc, Target_Sequence) %>% 
-  summarise(`#Reads` = sum(`#Reads`), Reference_Sequence = unique(Reference_Sequence)) %>% 
-  mutate(B.T_64 = str_sub(Target_Sequence, 14, 14),
-         B.T_73 = str_sub(Target_Sequence, 23, 23),
-         B.T_74 = str_sub(Target_Sequence, 24, 24),
-         B.T_78 = str_sub(Target_Sequence, 28, 28),
-         haplotype = str_glue("{B.T_64}{B.T_73}{B.T_74}{B.T_78}")) %>% 
-  ungroup()
+#Fix naming of columns
+AllelesPAX5_B <- AllelesPAX5_B %>% rename(bc = "DNA_cell") %>% separate(smp, into = c("Plate", "sample"))
+AllelesPAX5_B <- dplyr::inner_join(fread("../data/DNABarcodes.csv", header = T, col.names = c("Well", "DNA_cell")),
+                                   AllelesPAX5_B, by = "DNA_cell") # Merge with DNA barcodes
 
-allCellsBFltHaplo <- allCellsBFlt %>% 
-  dplyr::select(-Target_Sequence, -Reference_Sequence, -(B.T_64:B.T_78)) %>% 
-  dplyr::group_by(smp, bc, haplotype) %>% 
-  summarise(nReads = sum(`#Reads`)) %>% 
-  ungroup() %>% 
-  filter(nReads >= 10) %>% 
-  dplyr::group_by(smp, bc) %>% 
-  dplyr::arrange(desc(nReads), .by_group = T) %>% 
-  mutate(totalReads = sum(nReads), propReads = nReads / totalReads,
-         readDeriv = calcDeriv(log10(nReads)),
-         isMin = cumsum(cumsum(readDeriv == min(readDeriv)))) %>% 
-  filter(isMin <= 1)
 
-allCellsBFltHaplo %>% 
-  left_join(idxSort, by = c("smp", "bc")) %>% 
-  dplyr::group_by(smp, bc, cellType) %>% 
-  tally() %>% 
-  ggplot(aes(x = factor(n), fill = smp)) +
-  theme_zm() +
-  geom_bar(position = position_dodge()) +
-  facet_wrap(~ cellType, scales = "free")
+#Create a plate_well ID for easy cell identification by combining the barcode DNA with the well_ID
+AllelesPAX5_B <- AllelesPAX5_B %>% mutate(plate_well = paste0(sample, DNA_cell))
+#Group by this ID to create a grouped table. 
+AllelesPAX5_B <- AllelesPAX5_B %>% dplyr::group_by(plate_well)
 
-allCellsBFltHaplo %>% 
-  left_join(idxSort, by = c("smp", "bc")) %>% 
-  filter(cellType == "NTC") %>% 
-  dplyr::group_by(smp, haplotype) %>% 
-  tally() %>% 
-  ggplot(aes(x = haplotype, y = n, fill = smp)) +
-  theme_zm() +
-  geom_col(position = position_dodge())
+#Add the total # of reads per cell in a a new columbn for filtering. Future iterations of this analysis will simply multiply % of total * the number. 
+AllelesPAX5_B <- AllelesPAX5_B %>% 
+  summarize(TotalReads = sum(`#Reads`)) %>% 
+  dplyr::inner_join(AllelesPAX5_B)
 
-allCellsBFltGeno <- allCellsBFltHaplo %>% 
-  dplyr::group_by(smp, bc) %>% 
-  slice_max(nReads, n = 2) %>% 
-  mutate(hapName = "hap"%&%row_number()) %>% 
-  pivot_wider(id_cols = c(smp, bc, totalReads), names_from = hapName, values_from = haplotype) %>% 
-  mutate(hap2 = case_when(is.na(hap2) ~ hap1, T ~ hap2),
-         B.T_64 = (str_sub(hap1, 1, 1) == "C") + (str_sub(hap2, 1, 1) == "C"),
-         B.T_73 = (str_sub(hap1, 2, 2) == "C") + (str_sub(hap2, 2, 2) == "C"),
-         B.T_74 = (str_sub(hap1, 3, 3) == "C") + (str_sub(hap2, 3, 3) == "C"),
-         B.T_78 = (str_sub(hap1, 4, 4) == "C") + (str_sub(hap2, 4, 4) == "C"))
+#Fix name
+AllelesPAX5_B <- dplyr::rename(AllelesPAX5_B, Barcode_DNA = sample, Well_ID = Well)
+#Take top 10 alleles for visualiztion
+AllelesPAX5_B <- AllelesPAX5_B %>% dplyr::group_by(plate_well) %>% dplyr::slice_head(n = 10)
 
-fwrite(allCellsBFltGeno, col.names = T, row.names = F, sep = "\t", quote = F,
-       file = "../allCells_haplo_geno_B.txt.gz")
+Filter_Alleles_PAX5B <- Filtering_Cells_Read(AllelesPAX5_B)
 
-allCellsBFltGeno <- allCellsBFltGeno %>% 
-  left_join(allCellsABMGeno %>% dplyr::select(smp, bc, B.T_64.geno:B.T_64.geno), by = c("smp", "bc"))
+Filter_Alleles_PAX5B %>% ggplot(aes(`%Reads`)) + 
+  geom_histogram(aes(y = ..density..), bins = 100) +
+  theme_gy() +
+  geom_vline(xintercept = 20, color = "red") + 
+  facet_grid(~Barcode_DNA)
 
-allCellsBFltGeno %>% 
-  filter(totalReads >= 100) %>% 
-  dplyr::group_by(smp, B.T_64, B.T_64.geno) %>% 
-  tally() %>% 
-  ggplot(aes(factor(B.T_64), factor(B.T_64.geno), size = n)) +
-  theme_zm() +
-  geom_point() +
-  scale_size_continuous(range = c(2, 12)) +
-  facet_wrap(~ smp) +
-  theme(aspect.ratio = 1)
+Filter_Alleles_PAX5B <- Filtering_Alleles(ungroup(Filter_Alleles_PAX5B), 20)
 
-allCellsBFltHaploNTCAUC <- lapply(seq(0.05, 1, 0.02), function(s) {
-  tmp <- allCellsBFlt %>% 
-    dplyr::select(-Target_Sequence, -Reference_Sequence, -(B.T_64:B.T_78)) %>% 
-    dplyr::group_by(smp, bc, haplotype) %>% 
-    dplyr::summarise(nReads = sum(`#Reads`), .groups = "keep") %>% 
-    dplyr::group_by(smp, bc) %>% 
-    mutate(totalReads = sum(nReads), propReads = nReads / totalReads) %>% 
-    dplyr::arrange(desc(propReads), .by_group = T) %>% 
-    mutate(cumPropReads = cumsum(propReads),
-           cumCut = cumsum(cumPropReads >= s)) %>% 
-    filter(cumCut <= 1) %>% 
-    left_join(idxSort, by = c("smp", "bc")) %>% 
-    filter(totalReads >= 100) %>% 
-    mutate(callNTC = length(unique(haplotype)) == 1 & unique(haplotype) == "TTTT") %>% 
-    distinct(smp, bc, callNTC, cellType)
-  
-  tp <- sum(tmp$cellType == "NTC" & tmp$callNTC)
-  tn <- sum(tmp$cellType != "NTC" & !tmp$callNTC)
-  fp <- sum(tmp$cellType != "NTC" & tmp$callNTC)
-  fn <- sum(tmp$cellType == "NTC" & !tmp$callNTC)
-  
-  recall <- tp / (tp + fn)
-  precision <- tp / (tp + fp)
-  
-  return(data.frame(s, precision, recall, fp, tp))
-}) %>% base::Reduce(rbind, .)
+Filter_Alleles_PAX5B <- mutate(Filter_Alleles_PAX5B, Reference = "GTTTGCCTGGGAGATCAGGGACCGGCTGCTGGCAGAGCGGGTGTGTGACAATGACACCGTGCCTAGCGTCAGTTCCATCAACAGGTGAGGGGCTCGTGCCTGTGGGGGTTGGGGATTTGGAGGGATGGCAGGGCATCCTGGAGGCTCT")
 
-ggplot(allCellsBFltHaploNTCAUC, aes(fp / max(fp), tp / max(tp))) +
-  theme_zm() +
-  geom_point(color = "blue") +
-  geom_line(color = "blue") +
-  geom_point(data = allCellsAFltHaploNTCAUC, aes(fp / max(fp), tp / max(tp))) +
-  geom_line(data = allCellsAFltHaploNTCAUC, aes(fp / max(fp), tp / max(tp))) +
-  theme(aspect.ratio = 1)
+#Trim length for visualization and plotting
+Filter_Alleles_PAX5B <- 
+  mutate(Filter_Alleles_PAX5B, 
+         "Aligned_Sequence" = str_trunc(Aligned_Sequence, 84, "right", ellipsis = "")) %>% 
+  mutate("Reference"= str_trunc(Reference, 84, "right", ellipsis = ""))%>% 
+  mutate("Aligned_Sequence" = str_trunc(Aligned_Sequence, 30, "left", ellipsis = "")) %>% 
+  mutate("Reference"= str_trunc(Reference, 30, "left", ellipsis = ""))
 
-# Combine A and B ====
-allA <- fread("../allCells_haplo_geno_A.txt.gz")
-allB <- fread("../allCells_haplo_geno_B.txt.gz")
+Filter_Alleles_PAX5B <- Filter_Alleles_PAX5B %>% 
+  add_count(Aligned_Sequence) %>% 
+  filter(n >= 10)
+
+Filter_Alleles_PAX5B %>% Plotting_Alleles
+
+Filter_Alleles_PAX5B_gen <- Filter_Alleles_PAX5B %>% 
+  Genotyping_Cells() %>% 
+  add_count(AllelicGenotype)
+
+Filter_Alleles_PAX5B_gen %>% 
+  dplyr::inner_join(Filter_Alleles_PAX5B, by = "plate_well") %>% 
+  dplyr::select(AllelicGenotype, Barcode_DNA) %>% 
+  table()
+
+summReadsB <- Filter_Alleles_PAX5B %>% 
+  dplyr::group_by(plate_well) %>% 
+  summarise(B.totalReads = sum(`#Reads`)) %>% 
+  filter(B.totalReads >= 20)
+
+allCellsBFltSumm <- Filter_Alleles_PAX5B_gen %>% 
+  filter(plate_well %in% summReadsB$plate_well) %>% 
+  filter(str_count(genotype, fixed("_")) < 2) %>% 
+  separate(genotype, c("geno1", "geno2"), sep = "_",remove = F, fill = "right") %>% 
+  mutate(geno2 = case_when(is.na(geno2) ~ geno1, T ~ geno2)) %>% 
+  rowwise() %>% 
+  mutate(B.hap1 = str_flatten(str_sub(geno1, c(10, 19, 20, 24), c(10, 19, 20, 24))),
+         B.hap2 = str_flatten(str_sub(geno2, c(10, 19, 20, 24), c(10, 19, 20, 24))))
+
+sum(table(c(allCellsBFltSumm$B.hap1, allCellsBFltSumm$B.hap2)))
+sort(table(c(allCellsBFltSumm$B.hap1, allCellsBFltSumm$B.hap2)))
+
+commonHapB <- table(c(allCellsBFltSumm$B.hap1, allCellsBFltSumm$B.hap2))
+
+allCellsBFlt <- Filter_Alleles_PAX5B_gen %>% 
+  filter(str_count(genotype, fixed("_")) < 2) %>% 
+  separate(genotype, c("geno1", "geno2"), sep = "_",remove = F, fill = "right") %>% 
+  mutate(geno2 = case_when(is.na(geno2) ~ geno1, T ~ geno2),
+         smp = str_extract(plate_well, "^[ABM][1234]"),
+         well = str_sub(plate_well, start = 3, end = nchar(plate_well))) %>% 
+  rowwise() %>% 
+  mutate(B.hap1 = str_flatten(str_sub(geno1, c(10, 19, 20, 24), c(10, 19, 20, 24))),
+         B.hap2 = str_flatten(str_sub(geno2, c(10, 19, 20, 24), c(10, 19, 20, 24))),
+         B.T_64 = (str_sub(B.hap1, 1, 1) == "C") + (str_sub(B.hap2, 1, 1) == "C"),
+         B.T_73 = (str_sub(B.hap1, 2, 2) == "C") + (str_sub(B.hap2, 2, 2) == "C"),
+         B.T_74 = (str_sub(B.hap1, 3, 3) == "C") + (str_sub(B.hap2, 3, 3) == "C"),
+         B.T_78 = (str_sub(B.hap1, 4, 4) == "C") + (str_sub(B.hap2, 4, 4) == "C")) %>% 
+  filter(B.hap1 %in% names(commonHapB) & B.hap2 %in% names(commonHapB))
+
+fwrite(allCellsBFlt, col.names = T, row.names = F, sep = "\t", quote = F,
+       file = "../data/allCells_haplo_geno_B_12plates.txt.gz")
+
+# Combine A and B ----
+idxSort <- fread("../data/idxSort.txt")
+
+allA <- fread("../data/allCells_haplo_geno_A_12plates.txt.gz")
+allB <- fread("../data/allCells_haplo_geno_B_12plates.txt.gz")
 
 cmbHaploGeno <- allA %>% 
-  dplyr::rename(A.totalReads = totalReads, A.hap1 = hap1, A.hap2 = hap2) %>% 
-  dplyr::full_join(
-    allB %>% dplyr::rename(B.totalReads = totalReads, B.hap1 = hap1, B.hap2 = hap2) %>% 
-      dplyr::select(-hap3),
-    by = c("bc", "smp")) %>% 
-  dplyr::left_join(idxSort, by = c("bc", "smp"))
+  dplyr::select(-(genotype:n)) %>% 
+  dplyr::full_join(allB %>% dplyr::select(-(plate_well:n)), by = c("well", "smp")) %>% 
+  mutate(smp = "PAX5_"%&%smp) %>% 
+  dplyr::left_join(idxSort, by = c("well", "smp"))
+
+cmbHaploGeno <- cmbHaploGeno %>% 
+  filter(str_detect(smp, "PAX5_A") & !is.na(A.T_84) | str_detect(smp, "PAX5_B") & !is.na(B.T_64) |
+           str_detect(smp, "PAX5_M") & !is.na(A.T_84) & !is.na(B.T_64))
 
 fwrite(cmbHaploGeno, col.names = T, row.names = F, sep = "\t", quote = F,
-       file = "../allCells_haplo_geno_AB.txt.gz")
+       file = "../data/allCells_haplo_geno_AB_12plates.txt.gz")
+
+## Heatmap ====
+allCellsABMGenoNew <- fread("../data/allCells_haplo_geno_AB_12plates.txt.gz")
+
+genoMtrxAM <- allCellsABMGenoNew %>%
+  filter(cellType != "NTC" & str_detect(smp, "PAX5_A|PAX5_M")) %>% 
+  dplyr::select(A.T_84:A.T_108) %>%
+  mutate(across(.cols = A.T_84:A.T_108, .fns = as.integer)) %>%
+  as.matrix()
+
+genoMtrxBM <- allCellsABMGenoNew %>%
+  filter(cellType != "NTC" & str_detect(smp, "PAX5_B|PAX5_M")) %>% 
+  dplyr::select(B.T_64:B.T_78) %>%
+  mutate(across(.cols = B.T_64:B.T_78, .fns = as.integer)) %>%
+  as.matrix()
+
+genoMtrx <- allCellsABMGenoNew %>% 
+  dplyr::select(A.T_84:A.T_108, B.T_64:B.T_78) %>% 
+  mutate(across(A.T_84:B.T_78, as.integer)) %>% 
+  as.matrix()
+
+rownames(genoMtrx) <- allCellsABMGenoNew$smp%&%"-"%&%allCellsABMGenoNew$well
+genoMtrx <- t(genoMtrx)
+
+genoEditedMtrx <- allCellsABMGenoNew %>% 
+  filter(cellType == "Edited") %>% 
+  dplyr::select(A.T_84:A.T_108, B.T_64:B.T_78) %>% 
+  mutate(across(A.T_84:B.T_78, as.factor)) %>% 
+  as.matrix()
+
+genoEditedMtrx <- t(genoEditedMtrx)
+
+haTop <- HeatmapAnnotation(
+  Condition = allCellsABMGenoNew$cellType,
+  Editing = str_sub(allCellsABMGenoNew$smp, 6, 6),
+  N = anno_barplot(apply(genoMtrx, 2, function(x) sum(x > 0, na.rm = T)),
+                   gp = gpar(fill = "grey40"), bar_width = 1, axis_param = list(labels_rot = 0)),
+  col = list(Condition = c("NTC" = "lightgreen", "Edited" = "purple"),
+             Editing = c("A" = "yellow2", "B" = "green4", "M" = "blue2")),
+  annotation_legend_param = list(direction = "horizontal", nrow = 1),
+  simple_anno_size = unit(0.2, "in")
+)
+
+meanEdit <- t(apply(genoMtrx, 1, function(x) 100 * table(na.omit(x)) / length(na.omit(x))))
+
+haRight <- rowAnnotation(
+  "Edit %" = anno_barplot(meanEdit,bar_width = 1, gp = gpar(fill = c("wheat", "darkorange", "red3")),
+                          axis_param = list(labels_rot = 0)),
+  annotation_legend_param = list(direction = "horizontal", nrow = 1),
+  simple_anno_size = unit(0.5, "in")
+)
+
+genoMtrx0 <- genoMtrx
+genoMtrx0[is.na(genoMtrx0)] <- 0
+
+tmpH <- draw(Heatmap(genoMtrx0, cluster_rows = F, cluster_columns = T, show_column_names = F,
+                     clustering_method_columns = "ward.D2",
+                     clustering_distance_columns = "euclidean"))
+
+editHeatmap <- Heatmap(
+  genoMtrx, na_col = "grey",
+  col = c("0" = "wheat", "1" = "darkorange", "2" = "red3"),
+  name = "Genotype",
+  cluster_rows = F, cluster_columns = F,
+  column_order = column_order(tmpH),
+  row_names_side = "left", show_column_names = F,
+  row_split = c(rep("A", 4), rep("B", 4)),
+  column_split = str_sub(allCellsABMGenoNew$smp, 6, 6),
+  top_annotation = haTop,
+  right_annotation = haRight,
+  column_title = NULL, row_title = NULL,
+  raster_quality = 96, use_raster = F,
+  heatmap_legend_param = list(direction = "horizontal", nrow = 1)
+)
+
+pdf("../figs/editingHeatmap.pdf", width = 8, height = 4)
+draw(editHeatmap, heatmap_legend_side = "top", annotation_legend_side = "top")
+dev.off()
+
+## Only edited cells ----
+myCol <- circlize::colorRamp2(breaks = c(0, 1), colors = c("white", "red2"))
+
+genoMtrxA <- allCellsABMGenoNew %>%
+  filter(cellType != "NTC" & str_detect(smp, fixed("PAX5_A"))) %>% 
+  dplyr::select(A.T_84:A.T_108) %>%
+  mutate(across(.cols = A.T_84:A.T_108, .fns = as.integer)) %>%
+  as.matrix()
+
+hA <- Heatmap(cor(genoMtrxA), col = myCol, cluster_rows = F, cluster_columns = F,
+              show_column_names = F,
+              cell_fun = function(j, i, x, y, width, height, fill) {
+                grid.text(signif(cor(genoMtrxA)[i, j], 2), x, y, rot = -45, gp = gpar(fontsize = 8))
+              },
+              width = unit(1.2, "in"), height = unit(1.2, "in"))
+
+pdf("../figs/corrA.pdf", width = 5, height = 5)
+draw(hA)
+dev.off()
+
+genoMtrxB <- allCellsABMGenoNew %>%
+  filter(cellType != "NTC" & str_detect(smp, fixed("PAX5_B"))) %>% 
+  dplyr::select(B.T_64:B.T_78) %>%
+  mutate(across(.cols = B.T_64:B.T_78, .fns = as.integer)) %>%
+  as.matrix()
+
+hB <- Heatmap(cor(genoMtrxB), col = myCol, cluster_rows = F, cluster_columns = F,
+              show_column_names = F,
+              cell_fun = function(j, i, x, y, width, height, fill) {
+                grid.text(signif(cor(genoMtrxB)[i, j], 2), x, y, rot = -45, gp = gpar(fontsize = 8))
+              },
+              width = unit(1.2, "in"), height = unit(1.2, "in"))
+
+pdf("../figs/corrB.pdf", width = 5, height = 5)
+draw(hB)
+dev.off()
+
+genoMtrxM <- allCellsABMGenoNew %>%
+  filter(cellType != "NTC" & str_detect(smp, fixed("PAX5_M"))) %>% 
+  dplyr::select(A.T_84:A.T_108, B.T_64:B.T_78) %>%
+  mutate(across(.cols = A.T_84:B.T_78, .fns = as.integer)) %>%
+  as.matrix()
+
+hM <- Heatmap(cor(genoMtrxM), col = myCol, cluster_rows = F, cluster_columns = F,
+              show_column_names = F,
+              cell_fun = function(j, i, x, y, width, height, fill) {
+                grid.text(signif(cor(genoMtrxM)[i, j], 2), x, y, rot = -45, gp = gpar(fontsize = 8))
+              },
+              width = unit(2.4, "in"), height = unit(2.4, "in"))
+
+pdf("../figs/corrM.pdf", width = 8, height = 8)
+draw(hM)
+dev.off()

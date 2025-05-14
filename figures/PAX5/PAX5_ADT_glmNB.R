@@ -1,7 +1,7 @@
 ####################################################################################################
 ## Script purpose: Model ADT in PAX5 multiplexing with Wald and LRT test
 ## Author: Zepeng Mu
-## Date: Thu Jan 23 17:19:08 2025
+## Date: Wed Apr  2 14:32:51 2025
 ####################################################################################################
 library(tidyverse)
 library(data.table)
@@ -79,27 +79,24 @@ na.replace <- function(x, value = 0) {
 }
 
 # Load data ----
-pax5Cmb <- read_rds("../data/pax5CmbHarmony.rds")
-allCellsABMGeno <- fread("../data/allCells_haplo_geno_AB.txt.gz")
+pax5Cmb <- read_rds("../data/pax5Cmb_processed_12plates.rds")
+pax5CmbOld <- read_rds("../data/pax5CmbHarmony.rds") # Only six out of twelve plates have ADT
+allCellsABMGeno <- fread("../data/amplicon/allCells_haplo_geno_AB_12plates.txt.gz")
 
 allCellsABMGenoFlt <- allCellsABMGeno %>%
-  filter(str_detect(smp, "PAX5_A") & !is.na(A.T_84) | str_detect(smp, "PAX5_B") & !is.na(B.T_64) | 
-           str_detect(smp, "PAX5_M") & !is.na(A.T_84) & !is.na(B.T_64)) %>% 
   mutate(across(c(A.T_84:A.T_108, B.T_64:B.T_78), na.replace))
 
 # Running glm.nb ----
-metaDf <- pax5Cmb@meta.data
-adtCnt <- pax5Cmb[["ADT"]]$counts
+metaDf <- pax5CmbOld@meta.data
+adtCnt <- pax5CmbOld[["ADT"]]$counts
 
 ## All cells ----
 metaDfFiltered <- metaDf %>% 
+  dplyr::select(orig.ident, well, nCount_ADT) %>% 
   rownames_to_column("cellName") %>% 
-  dplyr::select(-(A.totalReads:cellType)) %>% 
   dplyr::inner_join(allCellsABMGenoFlt, by = c("orig.ident" = "smp", "well")) %>% 
-  filter(orig.ident != "PAX5_A2" & cellType != "NTC") %>% 
-  mutate(norm_nCount = log10(nCount_ADT), orig.ident = factor(orig.ident),
-         batch = factor(str_sub(orig.ident, 6, 6)),
-         across(c(A.T_84:A.T_108, B.T_64:B.T_78), na.replace))
+  filter(cellType != "NTC") %>% 
+  mutate(norm_nCount = log(nCount_ADT), orig.ident = factor(orig.ident))
 
 adtCntNew <- adtCnt[, metaDfFiltered$cellName]
 
@@ -107,8 +104,8 @@ summCnt <- data.frame(gene = rownames(adtCntNew),
                       propZero = rowSums(adtCntNew == 0) / ncol(adtCntNew),
                       meanCnt = rowMeans2(adtCntNew))
 
-modelFull <- cnt ~ A.T_84 + A.T_105 + A.T_106 + A.T_108 + B.T_64 + B.T_73 + B.T_74 + B.T_78 + norm_nCount + percent.mt + orig.ident
-modelNull <- cnt ~ norm_nCount + orig.ident + percent.mt
+modelFull <- cnt ~ A.T_84 + A.T_105 + A.T_106 + A.T_108 + B.T_64 + B.T_73 + B.T_74 + B.T_78 + norm_nCount + orig.ident
+modelNull <- cnt ~ norm_nCount + orig.ident
 
 resAll <- pbmclapply(summCnt %>% filter(propZero < 0.7) %>% pull(gene), function(x) {
   tmpDt <- metaDfFiltered %>% mutate(cnt = adtCntNew[x, ])
@@ -120,14 +117,10 @@ resAll <- pbmclapply(summCnt %>% filter(propZero < 0.7) %>% pull(gene), function
   return(tmpFit)
 }, mc.cores = 4) %>% Reduce(rbind, .)
 
-resAll <- resAll %>%
-  filter(!is.na(pval.A.T_84)) %>%
-  dplyr::left_join(summCnt, by = "gene")
+resAll <- resAll %>% filter(!is.na(pval.A.T_84))
 
 fwrite(resAll, quote = F, sep = "\t", row.names = F, col.names = T,
-       file = "../results/ADT_allCells_glmNB_wald.txt.gz")
-
-resAll <- fread("../results/ADT_allCells_glmNB_wald.txt.gz")
+       file = "../results/ADT_allCells_glmNB_wald3.txt.gz")
 
 resAll$fdrLRT <- p.adjust(resAll$pvalLRT, method = "BH")
 resAll$gene[resAll$fdrLRT <= 0.05]
@@ -152,16 +145,19 @@ resAll %>%
   facet_wrap(~gene, scale = "free") +
   theme(legend.position = "bottom")
 
+ggsave(filename = "../figs/forest_ADT.pdf", height = 3, width = 6)
+
+
 #### Examples ----
 tmpGene <- "Hu.CD72"
 metaDfFiltered$cnt <- adtCntNew[tmpGene, ]
 tmpPval <- anova(
   glm.nb(formula = modelFull, data = metaDfFiltered),
-  glm.nb(formula = cnt ~ A.T_84 + A.T_106 + A.T_108 + B.T_64 + B.T_73 + B.T_74 + norm_nCount + percent.mt + orig.ident, data = metaDfFiltered)
+  glm.nb(formula = cnt ~ A.T_84 + A.T_106 + A.T_108 + B.T_64 + B.T_73 + B.T_74 + norm_nCount + orig.ident, data = metaDfFiltered)
 )
 
 metaDfFiltered %>% 
-  mutate(rsdl = residuals(glm.nb(formula = cnt ~ A.T_84 + A.T_105 + A.T_106 + A.T_108 + B.T_64 + B.T_73 + B.T_74 + norm_nCount + percent.mt + orig.ident, data = metaDfFiltered))) %>% 
+  mutate(rsdl = residuals(glm.nb(formula = cnt ~ A.T_84 + A.T_105 + A.T_106 + A.T_108 + B.T_64 + B.T_73 + B.T_74 + norm_nCount + orig.ident, data = metaDfFiltered))) %>% 
   ggplot(aes(x = factor(B.T_78), y = rsdl, color = factor(B.T_78))) +
   theme_zm() +
   geom_boxplot(outliers = F, width = 0.6, size = 0.4, show.legend = F) +
@@ -170,15 +166,17 @@ metaDfFiltered %>%
   scale_x_discrete(labels = c("A/A", "A/G", "G/G")) +
   labs(title = "", subtitle = str_glue("LRT p={signif(tmpPval$`Pr(Chi)`[2], 3)}"), x = "B.29", y = "ADT - CD72")
 
+ggsave(filename = str_glue("../figs/boxplot_ADT_{tmpGene}_B78.pdf"), height = 2.2, width = 1.6)
+
 tmpGene <- "Hu.HLA.DR"
 metaDfFiltered$cnt <- adtCntNew[tmpGene, ]
 tmpPval <- anova(
   glm.nb(formula = modelFull, data = metaDfFiltered),
-  glm.nb(formula = cnt ~ A.T_84 + A.T_106 + A.T_108 + B.T_64 + B.T_73 + B.T_74 + norm_nCount + percent.mt + orig.ident, data = metaDfFiltered)
+  glm.nb(formula = cnt ~ A.T_84 + A.T_106 + A.T_108 + B.T_64 + B.T_73 + B.T_74 + norm_nCount + orig.ident, data = metaDfFiltered)
 )
 
 g1 <- metaDfFiltered %>% 
-  mutate(rsdl = residuals(glm.nb(formula = cnt ~ A.T_84 + A.T_105 + A.T_106 + A.T_108 + B.T_64 + B.T_73 + B.T_74 + norm_nCount + percent.mt + orig.ident, data = metaDfFiltered))) %>% 
+  mutate(rsdl = residuals(glm.nb(formula = cnt ~ A.T_84 + A.T_105 + A.T_106 + A.T_108 + B.T_64 + B.T_73 + B.T_74 + norm_nCount + orig.ident, data = metaDfFiltered))) %>% 
   ggplot(aes(x = factor(B.T_78), y = rsdl, color = factor(B.T_78))) +
   theme_zm() +
   geom_boxplot(outliers = F, width = 0.6, size = 0.4, show.legend = F) +
@@ -187,22 +185,7 @@ g1 <- metaDfFiltered %>%
   scale_x_discrete(labels = c("A/A", "A/G", "G/G")) +
   labs(title = "", subtitle = str_glue("LRT p={signif(tmpPval$`Pr(Chi)`[2], 3)}"), x = "B.29", y = "ADT - HLA-DR")
 
-tmpPval <- anova(
-  glm.nb(formula = modelFull, data = metaDfFiltered),
-  glm.nb(formula = cnt ~ A.T_84 + A.T_106 + A.T_108 + B.T_64 + B.T_73 + B.T_78 + norm_nCount + percent.mt + orig.ident, data = metaDfFiltered)
-)
-
-g2 <- metaDfFiltered %>% 
-  mutate(rsdl = residuals(glm.nb(formula = cnt ~ A.T_84 + A.T_105 + A.T_106 + A.T_108 + B.T_64 + B.T_73 + B.T_78 + norm_nCount + percent.mt + orig.ident, data = metaDfFiltered))) %>% 
-  ggplot(aes(x = factor(B.T_78), y = rsdl, color = factor(B.T_78))) +
-  theme_zm() +
-  geom_boxplot(outliers = F, width = 0.6, size = 0.4, show.legend = F) +
-  geom_point_rast(position = position_jitter(width = 0.2), size = 0.2, scale = 0.5, show.legend = F) +
-  scale_color_manual(limits = c("0", "1", "2"), values = c("wheat2", "darkorange", "red3")) +
-  scale_x_discrete(labels = c("AA", "AG", "GG")) +
-  labs(title = "", subtitle = str_glue("LRT p={signif(tmpPval$`Pr(Chi)`[2], 3)}"), x = "B.25", y = "ADT - HLA-DR")
-
-g1 | g2
+ggsave(plot = g1, filename = str_glue("../figs/boxplot_ADT_{tmpGene}_B78.pdf"), height = 2.2, width = 1.6)
 
 mut <- c("A.T_84", "A.T_105", "A.T_106", "A.T_108", "B.T_64", "B.T_73", "B.T_74", "B.T_78")
 mutName <- c("A.14", "A.35", "A.36", "A.38", "B.15", "B.24", "B.25", "B.29")
@@ -212,7 +195,7 @@ for (tmpGene in c("Hu.CD72", "Hu.HLA.DR")) {
   tmpDt <- metaDfFiltered %>% mutate(cnt = adtCntNew[tmpGene, ])
   tmpgList <- lapply(mut, function(tmpMut) {
     otherMut <- setdiff(mut, tmpMut)
-    tmpModelNull <- as.formula(str_glue("cnt ~ {str_flatten(otherMut,collapse = '+')} + norm_nCount + percent.mt + orig.ident"))
+    tmpModelNull <- as.formula(str_glue("cnt ~ {str_flatten(otherMut, collapse = '+')} + norm_nCount + orig.ident"))
     
     tmpPval <- anova(glm.nb(formula = modelFull, data = tmpDt),
                      glm.nb(formula = tmpModelNull, data = tmpDt))
