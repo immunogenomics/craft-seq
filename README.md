@@ -1,11 +1,11 @@
-# craft-seq
-This repo provides code for the analysis of CRAFT-seq data corresponding to [Baglaenko, et al, biorxiv, 2024](https://www.biorxiv.org/content/10.1101/2024.03.28.587175v1).
+# CRAFTseq
+This repo provides code for the analysis of CRAFTseq data corresponding to [Baglaenko, et al, biorxiv, 2024](https://www.biorxiv.org/content/10.1101/2024.03.28.587175v1).
 
 Contact: [Yuriy Baglaenko](yuriy.baglaenko@cchmc.org), [Zepeng "Phoenix" Mu](zemu@bwh.harvard.edu)
 
 [![DOI](https://zenodo.org/badge/778438642.svg)](https://doi.org/10.5281/zenodo.15425509)
 
-Contained in this repo are notebooks or scripts for the analyses and figures included in the manuscript. We have also provided a [tutorial](./example/Example_CraftSeq.ipynb) notebook for the entire pipeline of analyzing data produced by CRAFT-Seq. This notebook utilizes data produced from the PTPRC experiment.
+Contained in this repo are notebooks or scripts for the analyses and figures included in the manuscript. We have also provided a [tutorial](./example/Example_CraftSeq.ipynb) notebook for the entire pipeline of analyzing data produced by CRAFTSeq. This notebook utilizes data produced from the PTPRC experiment.
 
 | Experiment  |  Figure # | Notebooks/Scripts | Notes |
 |--------|----------|----------|----------|
